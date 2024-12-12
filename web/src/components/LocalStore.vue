@@ -73,6 +73,13 @@
     </div>
     <div slot="footer" class="dialog-footer">
       <el-button
+          type="primary"
+          size="medium"
+          class="float-left"
+          @click="showLocalStoreFile('/')"
+      >随机获取</el-button
+      >
+      <el-button
         type="primary"
         size="medium"
         class="float-left"

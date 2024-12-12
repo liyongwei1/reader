@@ -84,6 +84,8 @@ import kotlinx.coroutines.CoroutineScope
 import me.ag2s.epublib.domain.*
 import me.ag2s.epublib.epub.EpubWriter
 import me.ag2s.epublib.util.ResourceUtil
+import java.util.Objects
+
 // import io.legado.app.help.coroutine.Coroutine
 
 private val logger = KotlinLogging.logger {}
@@ -2372,52 +2374,87 @@ class BookController(coroutineContext: CoroutineContext): BaseController(corouti
 
     suspend fun getLocalStoreFileList(context: RoutingContext): ReturnData {
         val returnData = ReturnData()
+
         if (!checkAuth(context)) {
             return returnData.setData("NEED_LOGIN").setErrorMsg("请登录后使用")
         }
+
         if (appConfig.secure) {
-            var userInfo = context.get("userInfo") as User?
-            if (userInfo == null) {
-                return returnData.setData("NEED_LOGIN").setErrorMsg("请登录后使用")
-            }
-            if (!userInfo.enable_local_store) {
-                return returnData.setErrorMsg("未开启本地书仓功能")
+            val userInfo = context.get("userInfo") as User?
+            if (userInfo == null || !userInfo.enable_local_store) {
+                return returnData.setErrorMsg(if (userInfo == null) "请登录后使用" else "未开启本地书仓功能")
             }
         }
-        var path: String
-        if (context.request().method() == HttpMethod.POST) {
-            // post 请求
-            path = context.bodyAsJson.getString("path") ?: ""
+
+        val path = if (context.request().method() == HttpMethod.POST) {
+            context.bodyAsJson.getString("path") ?: ""
         } else {
-            // get 请求
-            path = context.queryParam("path").firstOrNull() ?: ""
-        }
-        if (path.isEmpty()) {
-            path = "/"
-        }
-        var home = getWorkDir("storage", "localStore")
-        var file = File(home + path)
+            context.queryParam("path").firstOrNull() ?: ""
+        }.ifEmpty { "/" }
+
+        val home = getWorkDir("storage", "localStore")
+        val file = File(home + path)
+
         logger.info("file: {} {}", path, file)
+
         if (!file.exists()) {
             return returnData.setErrorMsg("路径不存在")
         }
+
         if (!file.isDirectory()) {
             return returnData.setErrorMsg("路径不是目录")
         }
-        var fileList = arrayListOf<Map<String, Any>>()
-        file.listFiles().forEach{
-            if (!it.name.startsWith(".")) {
-                fileList.add(mapOf(
+
+        // 分页参数处理
+        val pageNum = context.queryParam("pageNum").firstOrNull()?.toIntOrNull() ?: 1
+        val pageSize = context.queryParam("pageSize").firstOrNull()?.toIntOrNull() ?: 10
+
+        // 读取文件列表
+        var fileList : List<Map<String, Comparable<*>>>? = emptyList()
+        if (fileListCache.containsKey(file.absolutePath)) {
+            fileList = fileListCache.get(file.absolutePath)?: emptyList()
+        } else {
+            fileList = file.listFiles()?.filter { !it.name.startsWith(".") }?.map {
+                mapOf(
                     "name" to it.name,
                     "size" to it.length(),
                     "path" to it.toString().replace(home, ""),
                     "lastModified" to it.lastModified(),
                     "isDirectory" to it.isDirectory()
-                ))
-            }
+                )
+            } ?: emptyList()
+            fileListCache[file.absolutePath] = fileList
         }
-        return returnData.setData(fileList)
+
+        // 分页结果
+        val maxPageNum = (fileList.size + pageSize - 1) / pageSize
+        val randomPageNum = (1..maxPageNum).random()
+
+        val paginatedList = paginateList(fileList, randomPageNum, pageSize)
+
+        return returnData.setData(
+            paginatedList
+        )
     }
+
+    fun <T> paginateList(originalList: List<T>?, page: Int, pageSize: Int): List<T> {
+        if (page <= 0 || pageSize <= 0) {
+            throw IllegalArgumentException("Page and pageSize must be greater than 0")
+        }
+        if (originalList == null) {
+            return emptyList()
+        }
+        val fromIndex = (page - 1) * pageSize
+        val toIndex = (page * pageSize).coerceAtMost(originalList.size)
+
+        return if (fromIndex in originalList.indices) {
+            originalList.subList(fromIndex, toIndex)
+        } else {
+            emptyList() // 返回空列表表示页码超出范围
+        }
+    }
+
+    var fileListCache : MutableMap<String, List<Map<String, Comparable<*>>>?> = HashMap(8)
 
     suspend fun getLocalStoreFile(context: RoutingContext) {
         val returnData = ReturnData()
